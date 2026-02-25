@@ -9,9 +9,12 @@ int cursor_y = 0;
 char shell_buffer[256];
 int shell_pos = 0;
 
+extern void idt_init();
 void kputc(char c);
 void kprint(char* str);
 void kclear();
+
+// --- Utilitaires ---
 
 int strcmp(char* s1, char* s2) {
     int i = 0;
@@ -42,74 +45,58 @@ void print_time() {
     unsigned char day = read_cmos(0x07);
     unsigned char month = read_cmos(0x08);
     unsigned char year = read_cmos(0x09);
-
     int hour = ((hour_bcd >> 4) & 0x0F) * 10 + (hour_bcd & 0x0F);
-    
     hour = hour + 1; 
     if (hour >= 24) hour = 0;
-
     kprint("Date : ");
     kputc(((day >> 4) & 0x0F) + '0'); kputc((day & 0x0F) + '0'); kputc('/');
     kputc(((month >> 4) & 0x0F) + '0'); kputc((month & 0x0F) + '0'); kprint("/20");
     kputc(((year >> 4) & 0x0F) + '0'); kputc((year & 0x0F) + '0');
-    
     kprint(" - Heure : ");
     kputc((hour / 10) + '0'); kputc((hour % 10) + '0'); kputc(':');
     kputc(((min >> 4) & 0x0F) + '0'); kputc((min & 0x0F) + '0'); kputc(':');
     kputc(((sec >> 4) & 0x0F) + '0'); kputc((sec & 0x0F) + '0');
 }
 
+// --- Shell ---
+
 void execute_command() {
     shell_buffer[shell_pos] = '\0';
     kprint("\n");
-
     if (strcmp(shell_buffer, "help") == 0) {
         kprint("Commandes: help, cls, time, version, whoami, cpu, echo [txt], color [1/2/4/e], reboot, halt");
-    } 
-    else if (strcmp(shell_buffer, "cls") == 0 || strcmp(shell_buffer, "clear") == 0) {
+    } else if (strcmp(shell_buffer, "cls") == 0 || strcmp(shell_buffer, "clear") == 0) {
         kclear();
-    }
-    else if (strcmp(shell_buffer, "time") == 0) {
+    } else if (strcmp(shell_buffer, "time") == 0) {
         print_time();
-    }
-    else if (strcmp(shell_buffer, "version") == 0) {
-        kprint("Crystal Blue OS v0.3.1 - Version Stable.");
-    }
-    else if (strcmp(shell_buffer, "whoami") == 0) {
+    } else if (strcmp(shell_buffer, "version") == 0) {
+        kprint("Crystal Blue OS v0.4.0 - Interrupt Mode");
+    } else if (strcmp(shell_buffer, "whoami") == 0) {
         kprint("Utilisateur: Root\nMachine: Crystal-T14-Virtual");
-    }
-    else if (strcmp(shell_buffer, "cpu") == 0) {
-        kprint("Processeur: x86 compatible (Mode 32-bits Protege)");
-    }
-    else if (strncmp(shell_buffer, "echo ", 5) == 0) {
+    } else if (strcmp(shell_buffer, "cpu") == 0) {
+        kprint("Processeur: x86 compatible (IDT Active)");
+    } else if (strncmp(shell_buffer, "echo ", 5) == 0) {
         kprint(shell_buffer + 5);
-    }
-    else if (strncmp(shell_buffer, "color ", 6) == 0) {
+    } else if (strncmp(shell_buffer, "color ", 6) == 0) {
         char c = shell_buffer[6];
         if (c == '1') current_color = 0x1F;
         else if (c == '2') current_color = 0x2F;
         else if (c == '4') current_color = 0x4F;
         else if (c == 'e') current_color = 0xEF;
-        kprint("Couleur modifiee. Tapez 'cls' pour appliquer partout.");
-    }
-    else if (strcmp(shell_buffer, "reboot") == 0) {
+        kprint("Couleur modifiee. Tapez 'cls' pour rafraichir.");
+    } else if (strcmp(shell_buffer, "reboot") == 0) {
         outb(0x64, 0xFE);
-    }
-    else if (strcmp(shell_buffer, "halt") == 0) {
+    } else if (strcmp(shell_buffer, "halt") == 0) {
         kprint("Systeme stoppe.");
         asm volatile("hlt");
-    }
-    else if (shell_pos > 0) {
+    } else if (shell_pos > 0) {
         kprint("Erreur: '"); kprint(shell_buffer); kprint("' inconnu.");
     }
-
-    if (strcmp(shell_buffer, "cls") != 0 && strcmp(shell_buffer, "clear") != 0) {
-        kprint("\n> ");
-    } else {
-        kprint("> ");
-    }
+    kprint("\n> ");
     shell_pos = 0;
 }
+
+// --- Affichage ---
 
 void update_cursor() {
     unsigned short pos = cursor_y * VGA_WIDTH + cursor_x;
@@ -159,20 +146,32 @@ unsigned char get_ascii(unsigned char scancode) {
     return (scancode < 128) ? azerty_map[scancode] : 0;
 }
 
-void __attribute__((section(".text.kernel_main"))) kernel_main() {
-    while (inb(0x64) & 0x01) { inb(0x60); }
-    kclear();
-    kprint("Crystal Blue OS v0.3.1\nTapez 'help' pour voir toutes les commandes.\n> ");
+// --- Gestionnaire d'Interruption ---
 
-    while (1) {
-        if (inb(0x64) & 0x01) {
-            unsigned char scancode = inb(0x60);
-            char c = get_ascii(scancode);
-            if (c > 0) {
-                if (c == '\n') execute_command();
-                else if (c == '\b') { if (shell_pos > 0) { shell_pos--; kputc('\b'); } }
-                else if (shell_pos < 255) { shell_buffer[shell_pos++] = c; kputc(c); }
-            }
-        }
+void keyboard_handler() {
+    unsigned char scancode = inb(0x60);
+    char c = get_ascii(scancode);
+    if (c > 0) {
+        if (c == '\n') execute_command();
+        else if (c == '\b') { if (shell_pos > 0) { shell_pos--; kputc('\b'); } }
+        else if (shell_pos < 255) { shell_buffer[shell_pos++] = c; kputc(c); }
+    }
+    outb(0x20, 0x20); // Fin d'interruption (EOI)
+}
+
+// --- Point d'entrée ---
+
+void __attribute__((section(".text.kernel_main"))) kernel_main() {
+    kclear();
+    kprint("Crystal Blue OS v0.4.0\n");
+    
+    kprint("Initialisation IDT... ");
+    idt_init();
+    kprint("OK!\n");
+    
+    kprint("Mode Interruptions actif.\n> ");
+    
+    while(1) {
+        asm volatile("hlt");
     }
 }
