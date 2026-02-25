@@ -9,9 +9,12 @@ int cursor_y = 0;
 char shell_buffer[256];
 int shell_pos = 0;
 
-// --- NOUVEAU : Variables de sécurité ---
+// Sécurité
 int logged_in = 0;
-char* secret_password = "admin"; // Ton mot de passe par défaut
+char* secret_password = "admin";
+
+// Timer
+unsigned long timer_ticks = 0;
 
 extern void idt_init();
 void kputc(char c);
@@ -42,64 +45,79 @@ unsigned char read_cmos(unsigned char reg) {
     return inb(0x71);
 }
 
+// --- NOUVEAU : Gestion du Timer ---
+
+void timer_init(int hz) {
+    int divisor = 1193180 / hz;
+    outb(0x43, 0x36);
+    outb(0x40, divisor & 0xFF);
+    outb(0x40, (divisor >> 8) & 0xFF);
+}
+
+void draw_timer() {
+    char* vga = (char*)0xB8000;
+    unsigned long seconds = timer_ticks / 100;
+    
+    // Affichage en haut à droite (position 70)
+    int pos = (0 * VGA_WIDTH + 65) * 2;
+    char time_str[10];
+    
+    vga[pos] = 'U'; vga[pos+2] = 'p'; vga[pos+4] = ':'; vga[pos+6] = ' ';
+    
+    // Conversion simple nombre -> char (pour les secondes)
+    int s = seconds % 60;
+    int m = (seconds / 60) % 60;
+    
+    vga[pos+8] = (m / 10) + '0';
+    vga[pos+10] = (m % 10) + '0';
+    vga[pos+12] = ':';
+    vga[pos+14] = (s / 10) + '0';
+    vga[pos+16] = (s % 10) + '0';
+}
+
+void timer_handler() {
+    timer_ticks++;
+    if (timer_ticks % 100 == 0) {
+        draw_timer();
+    }
+    outb(0x20, 0x20); // EOI
+}
+
+// --- Fonctions classiques ---
+
 void print_time() {
     unsigned char sec = read_cmos(0x00);
     unsigned char min = read_cmos(0x02);
     unsigned char hour_bcd = read_cmos(0x04);
-    unsigned char day = read_cmos(0x07);
-    unsigned char month = read_cmos(0x08);
-    unsigned char year = read_cmos(0x09);
     int hour = ((hour_bcd >> 4) & 0x0F) * 10 + (hour_bcd & 0x0F);
-    hour = hour + 1; 
-    if (hour >= 24) hour = 0;
-    kprint("Date : ");
-    kputc(((day >> 4) & 0x0F) + '0'); kputc((day & 0x0F) + '0'); kputc('/');
-    kputc(((month >> 4) & 0x0F) + '0'); kputc((month & 0x0F) + '0'); kprint("/20");
-    kputc(((year >> 4) & 0x0F) + '0'); kputc((year & 0x0F) + '0');
-    kprint(" - Heure : ");
+    hour = (hour + 1) % 24;
+    kprint("Heure actuelle : ");
     kputc((hour / 10) + '0'); kputc((hour % 10) + '0'); kputc(':');
-    kputc(((min >> 4) & 0x0F) + '0'); kputc((min & 0x0F) + '0'); kputc(':');
-    kputc(((sec >> 4) & 0x0F) + '0'); kputc((sec & 0x0F) + '0');
+    kputc(((min >> 4) & 0x0F) + '0'); kputc((min & 0x0F) + '0');
 }
-
-// --- Shell ---
 
 void execute_command() {
     shell_buffer[shell_pos] = '\0';
     kprint("\n");
     if (strcmp(shell_buffer, "help") == 0) {
-        kprint("Commandes: help, cls, time, version, whoami, cpu, echo [txt], color [1/2/4/e], logout, reboot, halt");
-    } else if (strcmp(shell_buffer, "cls") == 0 || strcmp(shell_buffer, "clear") == 0) {
+        kprint("Commandes: help, cls, time, whoami, cpu, logout, reboot, halt");
+    } else if (strcmp(shell_buffer, "cls") == 0) {
         kclear();
     } else if (strcmp(shell_buffer, "time") == 0) {
         print_time();
-    } else if (strcmp(shell_buffer, "version") == 0) {
-        kprint("Crystal Blue OS v0.5.0 - Secure Edition");
-    } else if (strcmp(shell_buffer, "whoami") == 0) {
-        kprint("Utilisateur: Root\nMachine: Crystal-T14-Virtual");
-    } else if (strcmp(shell_buffer, "cpu") == 0) {
-        kprint("Processeur: x86 compatible (IDT Active)");
-    } else if (strncmp(shell_buffer, "echo ", 5) == 0) {
-        kprint(shell_buffer + 5);
     } else if (strcmp(shell_buffer, "logout") == 0) {
-        logged_in = 0;
-        kclear();
-        kprint("Session terminee.\nPassword: ");
-        shell_pos = 0;
-        return;
+        logged_in = 0; kclear(); kprint("Session terminee.\nPassword: ");
+        shell_pos = 0; return;
     } else if (strcmp(shell_buffer, "reboot") == 0) {
         outb(0x64, 0xFE);
     } else if (strcmp(shell_buffer, "halt") == 0) {
-        kprint("Systeme stoppe.");
         asm volatile("hlt");
     } else if (shell_pos > 0) {
-        kprint("Erreur: '"); kprint(shell_buffer); kprint("' inconnu.");
+        kprint("Inconnu.");
     }
     kprint("\n> ");
     shell_pos = 0;
 }
-
-// --- Affichage ---
 
 void update_cursor() {
     unsigned short pos = cursor_y * VGA_WIDTH + cursor_x;
@@ -112,18 +130,13 @@ void kputc(char c) {
     if (c == '\n') {
         cursor_x = 0; cursor_y++;
     } else if (c == '\b') {
-        if (cursor_x > 0) {
-            cursor_x--;
-            vga[(cursor_y * VGA_WIDTH + cursor_x) * 2] = ' ';
-        }
+        if (cursor_x > 0) { cursor_x--; vga[(cursor_y * VGA_WIDTH + cursor_x) * 2] = ' '; }
     } else {
         int pos = (cursor_y * VGA_WIDTH + cursor_x) * 2;
-        vga[pos] = c;
-        vga[pos+1] = current_color;
+        vga[pos] = c; vga[pos+1] = current_color;
         cursor_x++;
     }
     if (cursor_x >= VGA_WIDTH) { cursor_x = 0; cursor_y++; }
-    if (cursor_y >= VGA_HEIGHT) { cursor_y = 0; kclear(); } 
     update_cursor();
 }
 
@@ -149,45 +162,35 @@ unsigned char get_ascii(unsigned char scancode) {
     return (scancode < 128) ? azerty_map[scancode] : 0;
 }
 
-// --- NOUVEAU : Gestionnaire de clavier avec Login ---
-
 void keyboard_handler() {
     unsigned char scancode = inb(0x60);
     char c = get_ascii(scancode);
-    
     if (c > 0) {
         if (c == '\n') {
             if (!logged_in) {
                 shell_buffer[shell_pos] = '\0';
                 if (strcmp(shell_buffer, secret_password) == 0) {
-                    logged_in = 1;
-                    kclear();
-                    kprint("Crystal Blue OS v0.5.0\nConnexion reussie. Tapez 'help'.\n> ");
-                } else {
-                    kprint("\nMot de passe incorrect.\nPassword: ");
-                }
+                    logged_in = 1; kclear();
+                    kprint("Crystal Blue OS v0.6.0\nConnecte. Tapez 'help'.\n> ");
+                } else { kprint("\nErreur.\nPassword: "); }
                 shell_pos = 0;
-            } else {
-                execute_command();
-            }
+            } else { execute_command(); }
         } else if (c == '\b') {
-            if (shell_pos > 0) {
-                shell_pos--;
-                kputc('\b');
-            }
+            if (shell_pos > 0) { shell_pos--; kputc('\b'); }
         } else if (shell_pos < 255) {
             shell_buffer[shell_pos++] = c;
-            if (!logged_in) kputc('*'); // Masquage du mot de passe
-            else kputc(c);
+            if (!logged_in) kputc('*'); else kputc(c);
         }
     }
     outb(0x20, 0x20); 
 }
 
 void __attribute__((section(".text.kernel_main"))) kernel_main() {
-    idt_init();
     kclear();
-    kprint("Crystal Blue OS v0.5.0\n");
+    idt_init();
+    timer_init(100); // 100 Hz
+    
+    kprint("Crystal Blue OS v0.6.0\n");
     kprint("----------------------\n");
     kprint("Password: ");
     
