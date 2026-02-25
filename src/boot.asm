@@ -8,7 +8,6 @@ start:
     mov ss, ax
     mov sp, 0x7C00
 
-    ; Charger le Kernel
     mov ah, 0x02
     mov al, 30
     mov ch, 0
@@ -18,7 +17,6 @@ start:
     mov bx, 0x1000
     int 0x13
 
-    ; Passage en Mode Protégé
     lgdt [gdtr]
     mov eax, cr0
     or eax, 1
@@ -45,7 +43,7 @@ protected_mode:
     mov gs, ax
     mov ss, ax
     mov esp, 0x90000
-    jmp 0x1000    ; On saute directement au Kernel
+    jmp 0x1000
 
 times 510-($-$$) db 0
 dw 0xAA55

@@ -19,8 +19,6 @@ void kputc(char c);
 void kprint(char* str);
 void kclear();
 
-// --- Utilitaires ---
-
 int strcmp(char* s1, char* s2) {
     int i = 0;
     while (s1[i] == s2[i]) {
@@ -43,8 +41,6 @@ unsigned char read_cmos(unsigned char reg) {
     return inb(0x71);
 }
 
-// --- NOUVEAU : Horloge en Direct ---
-
 void timer_init(int hz) {
     int divisor = 1193180 / hz;
     outb(0x43, 0x36);
@@ -54,22 +50,16 @@ void timer_init(int hz) {
 
 void draw_clock() {
     char* vga = (char*)0xB8000;
-    
-    // Lecture directe de la puce CMOS
     unsigned char sec_bcd = read_cmos(0x00);
     unsigned char min_bcd = read_cmos(0x02);
     unsigned char hour_bcd = read_cmos(0x04);
     
-    // Conversion BCD -> Decimal
     int s = ((sec_bcd >> 4) & 0x0F) * 10 + (sec_bcd & 0x0F);
     int m = ((min_bcd >> 4) & 0x0F) * 10 + (min_bcd & 0x0F);
     int h = ((hour_bcd >> 4) & 0x0F) * 10 + (hour_bcd & 0x0F);
     
-    // Ajustement UTC+1
     h = (h + 1) % 24;
 
-    // Position : Ligne 0, colonne 71 (tout en haut à droite)
-    // On utilise une couleur différente (Jaune sur Bleu : 0x1E) pour que ça ressorte
     int pos = (0 * VGA_WIDTH + 71) * 2;
     unsigned char clock_color = 0x1E; 
 
@@ -85,18 +75,13 @@ void draw_clock() {
 
 void timer_handler() {
     timer_ticks++;
-    // On rafraîchit l'horloge tous les 10 ticks (environ 10 fois par seconde)
-    // pour que l'affichage soit fluide sans surcharger le processeur
     if (timer_ticks % 10 == 0) {
         draw_clock();
     }
     outb(0x20, 0x20); 
 }
 
-// --- Fonctions classiques ---
-
 void print_time() {
-    // La commande "time" affiche maintenant la date complète
     unsigned char day = read_cmos(0x07);
     unsigned char month = read_cmos(0x08);
     unsigned char year = read_cmos(0x09);
@@ -146,7 +131,6 @@ void execute_command() {
         kprint("Erreur: '"); kprint(shell_buffer); kprint("' inconnu.");
     }
 
-    // On n'affiche le prompt que si on n'a pas clear l'écran ou logout
     if (strcmp(shell_buffer, "cls") != 0 && strcmp(shell_buffer, "logout") != 0) {
         kprint("\n> ");
     } else if (strcmp(shell_buffer, "cls") == 0) {
@@ -154,7 +138,7 @@ void execute_command() {
     }
 
     shell_pos = 0;
-}
+}   
 
 void update_cursor() {
     unsigned short pos = cursor_y * VGA_WIDTH + cursor_x;
