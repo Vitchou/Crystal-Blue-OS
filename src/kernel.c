@@ -9,6 +9,10 @@ int cursor_y = 0;
 char shell_buffer[256];
 int shell_pos = 0;
 
+// --- NOUVEAU : Variables de sécurité ---
+int logged_in = 0;
+char* secret_password = "admin"; // Ton mot de passe par défaut
+
 extern void idt_init();
 void kputc(char c);
 void kprint(char* str);
@@ -64,26 +68,25 @@ void execute_command() {
     shell_buffer[shell_pos] = '\0';
     kprint("\n");
     if (strcmp(shell_buffer, "help") == 0) {
-        kprint("Commandes: help, cls, time, version, whoami, cpu, echo [txt], color [1/2/4/e], reboot, halt");
+        kprint("Commandes: help, cls, time, version, whoami, cpu, echo [txt], color [1/2/4/e], logout, reboot, halt");
     } else if (strcmp(shell_buffer, "cls") == 0 || strcmp(shell_buffer, "clear") == 0) {
         kclear();
     } else if (strcmp(shell_buffer, "time") == 0) {
         print_time();
     } else if (strcmp(shell_buffer, "version") == 0) {
-        kprint("Crystal Blue OS v0.4.0 - Interrupt Mode");
+        kprint("Crystal Blue OS v0.5.0 - Secure Edition");
     } else if (strcmp(shell_buffer, "whoami") == 0) {
         kprint("Utilisateur: Root\nMachine: Crystal-T14-Virtual");
     } else if (strcmp(shell_buffer, "cpu") == 0) {
         kprint("Processeur: x86 compatible (IDT Active)");
     } else if (strncmp(shell_buffer, "echo ", 5) == 0) {
         kprint(shell_buffer + 5);
-    } else if (strncmp(shell_buffer, "color ", 6) == 0) {
-        char c = shell_buffer[6];
-        if (c == '1') current_color = 0x1F;
-        else if (c == '2') current_color = 0x2F;
-        else if (c == '4') current_color = 0x4F;
-        else if (c == 'e') current_color = 0xEF;
-        kprint("Couleur modifiee. Tapez 'cls' pour rafraichir.");
+    } else if (strcmp(shell_buffer, "logout") == 0) {
+        logged_in = 0;
+        kclear();
+        kprint("Session terminee.\nPassword: ");
+        shell_pos = 0;
+        return;
     } else if (strcmp(shell_buffer, "reboot") == 0) {
         outb(0x64, 0xFE);
     } else if (strcmp(shell_buffer, "halt") == 0) {
@@ -109,7 +112,7 @@ void kputc(char c) {
     if (c == '\n') {
         cursor_x = 0; cursor_y++;
     } else if (c == '\b') {
-        if (cursor_x > 2) {
+        if (cursor_x > 0) {
             cursor_x--;
             vga[(cursor_y * VGA_WIDTH + cursor_x) * 2] = ' ';
         }
@@ -146,30 +149,47 @@ unsigned char get_ascii(unsigned char scancode) {
     return (scancode < 128) ? azerty_map[scancode] : 0;
 }
 
-// --- Gestionnaire d'Interruption ---
+// --- NOUVEAU : Gestionnaire de clavier avec Login ---
 
 void keyboard_handler() {
     unsigned char scancode = inb(0x60);
     char c = get_ascii(scancode);
+    
     if (c > 0) {
-        if (c == '\n') execute_command();
-        else if (c == '\b') { if (shell_pos > 0) { shell_pos--; kputc('\b'); } }
-        else if (shell_pos < 255) { shell_buffer[shell_pos++] = c; kputc(c); }
+        if (c == '\n') {
+            if (!logged_in) {
+                shell_buffer[shell_pos] = '\0';
+                if (strcmp(shell_buffer, secret_password) == 0) {
+                    logged_in = 1;
+                    kclear();
+                    kprint("Crystal Blue OS v0.5.0\nConnexion reussie. Tapez 'help'.\n> ");
+                } else {
+                    kprint("\nMot de passe incorrect.\nPassword: ");
+                }
+                shell_pos = 0;
+            } else {
+                execute_command();
+            }
+        } else if (c == '\b') {
+            if (shell_pos > 0) {
+                shell_pos--;
+                kputc('\b');
+            }
+        } else if (shell_pos < 255) {
+            shell_buffer[shell_pos++] = c;
+            if (!logged_in) kputc('*'); // Masquage du mot de passe
+            else kputc(c);
+        }
     }
-    outb(0x20, 0x20); // Fin d'interruption (EOI)
+    outb(0x20, 0x20); 
 }
 
-// --- Point d'entrée ---
-
 void __attribute__((section(".text.kernel_main"))) kernel_main() {
-    kclear();
-    kprint("Crystal Blue OS v0.4.0\n");
-    
-    kprint("Initialisation IDT... ");
     idt_init();
-    kprint("OK!\n");
-    
-    kprint("Mode Interruptions actif.\n> ");
+    kclear();
+    kprint("Crystal Blue OS v0.5.0\n");
+    kprint("----------------------\n");
+    kprint("Password: ");
     
     while(1) {
         asm volatile("hlt");
