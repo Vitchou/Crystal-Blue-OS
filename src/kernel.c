@@ -9,11 +9,9 @@ int cursor_y = 0;
 char shell_buffer[256];
 int shell_pos = 0;
 
-// Sécurité
 int logged_in = 0;
 char* secret_password = "admin";
 
-// Timer
 unsigned long timer_ticks = 0;
 
 extern void idt_init();
@@ -45,7 +43,7 @@ unsigned char read_cmos(unsigned char reg) {
     return inb(0x71);
 }
 
-// --- NOUVEAU : Gestion du Timer ---
+// --- NOUVEAU : Horloge en Direct ---
 
 void timer_init(int hz) {
     int divisor = 1193180 / hz;
@@ -54,68 +52,107 @@ void timer_init(int hz) {
     outb(0x40, (divisor >> 8) & 0xFF);
 }
 
-void draw_timer() {
+void draw_clock() {
     char* vga = (char*)0xB8000;
-    unsigned long seconds = timer_ticks / 100;
     
-    // Affichage en haut à droite (position 70)
-    int pos = (0 * VGA_WIDTH + 65) * 2;
-    char time_str[10];
+    // Lecture directe de la puce CMOS
+    unsigned char sec_bcd = read_cmos(0x00);
+    unsigned char min_bcd = read_cmos(0x02);
+    unsigned char hour_bcd = read_cmos(0x04);
     
-    vga[pos] = 'U'; vga[pos+2] = 'p'; vga[pos+4] = ':'; vga[pos+6] = ' ';
+    // Conversion BCD -> Decimal
+    int s = ((sec_bcd >> 4) & 0x0F) * 10 + (sec_bcd & 0x0F);
+    int m = ((min_bcd >> 4) & 0x0F) * 10 + (min_bcd & 0x0F);
+    int h = ((hour_bcd >> 4) & 0x0F) * 10 + (hour_bcd & 0x0F);
     
-    // Conversion simple nombre -> char (pour les secondes)
-    int s = seconds % 60;
-    int m = (seconds / 60) % 60;
-    
-    vga[pos+8] = (m / 10) + '0';
-    vga[pos+10] = (m % 10) + '0';
-    vga[pos+12] = ':';
-    vga[pos+14] = (s / 10) + '0';
-    vga[pos+16] = (s % 10) + '0';
+    // Ajustement UTC+1
+    h = (h + 1) % 24;
+
+    // Position : Ligne 0, colonne 71 (tout en haut à droite)
+    // On utilise une couleur différente (Jaune sur Bleu : 0x1E) pour que ça ressorte
+    int pos = (0 * VGA_WIDTH + 71) * 2;
+    unsigned char clock_color = 0x1E; 
+
+    vga[pos]   = (h / 10) + '0'; vga[pos+1] = clock_color;
+    vga[pos+2] = (h % 10) + '0'; vga[pos+3] = clock_color;
+    vga[pos+4] = ':';            vga[pos+5] = clock_color;
+    vga[pos+6] = (m / 10) + '0'; vga[pos+7] = clock_color;
+    vga[pos+8] = (m % 10) + '0'; vga[pos+9] = clock_color;
+    vga[pos+10] = ':';           vga[pos+11] = clock_color;
+    vga[pos+12] = (s / 10) + '0'; vga[pos+13] = clock_color;
+    vga[pos+14] = (s % 10) + '0'; vga[pos+15] = clock_color;
 }
 
 void timer_handler() {
     timer_ticks++;
-    if (timer_ticks % 100 == 0) {
-        draw_timer();
+    // On rafraîchit l'horloge tous les 10 ticks (environ 10 fois par seconde)
+    // pour que l'affichage soit fluide sans surcharger le processeur
+    if (timer_ticks % 10 == 0) {
+        draw_clock();
     }
-    outb(0x20, 0x20); // EOI
+    outb(0x20, 0x20); 
 }
 
 // --- Fonctions classiques ---
 
 void print_time() {
-    unsigned char sec = read_cmos(0x00);
-    unsigned char min = read_cmos(0x02);
-    unsigned char hour_bcd = read_cmos(0x04);
-    int hour = ((hour_bcd >> 4) & 0x0F) * 10 + (hour_bcd & 0x0F);
-    hour = (hour + 1) % 24;
-    kprint("Heure actuelle : ");
-    kputc((hour / 10) + '0'); kputc((hour % 10) + '0'); kputc(':');
-    kputc(((min >> 4) & 0x0F) + '0'); kputc((min & 0x0F) + '0');
+    // La commande "time" affiche maintenant la date complète
+    unsigned char day = read_cmos(0x07);
+    unsigned char month = read_cmos(0x08);
+    unsigned char year = read_cmos(0x09);
+    kprint("Date du systeme : ");
+    kputc(((day >> 4) & 0x0F) + '0'); kputc((day & 0x0F) + '0'); kputc('/');
+    kputc(((month >> 4) & 0x0F) + '0'); kputc((month & 0x0F) + '0'); kprint("/20");
+    kputc(((year >> 4) & 0x0F) + '0'); kputc((year & 0x0F) + '0');
 }
 
 void execute_command() {
     shell_buffer[shell_pos] = '\0';
     kprint("\n");
+
     if (strcmp(shell_buffer, "help") == 0) {
-        kprint("Commandes: help, cls, time, whoami, cpu, logout, reboot, halt");
-    } else if (strcmp(shell_buffer, "cls") == 0) {
+        kprint("Commandes: help, cls, time, whoami, cpu, echo [txt], logout, reboot, halt");
+    } 
+    else if (strcmp(shell_buffer, "cls") == 0 || strcmp(shell_buffer, "clear") == 0) {
         kclear();
-    } else if (strcmp(shell_buffer, "time") == 0) {
+    } 
+    else if (strcmp(shell_buffer, "time") == 0) {
         print_time();
-    } else if (strcmp(shell_buffer, "logout") == 0) {
-        logged_in = 0; kclear(); kprint("Session terminee.\nPassword: ");
-        shell_pos = 0; return;
-    } else if (strcmp(shell_buffer, "reboot") == 0) {
+    } 
+    else if (strcmp(shell_buffer, "whoami") == 0) {
+        kprint("Utilisateur: Root\nMachine: Crystal-T14-Virtual");
+    } 
+    else if (strcmp(shell_buffer, "cpu") == 0) {
+        kprint("Processeur: x86 compatible (Mode Protege + IDT + PIT)");
+    } 
+    else if (strncmp(shell_buffer, "echo ", 5) == 0) {
+        kprint(shell_buffer + 5);
+    } 
+    else if (strcmp(shell_buffer, "logout") == 0) {
+        logged_in = 0; 
+        kclear(); 
+        kprint("Session terminee.\nPassword: ");
+        shell_pos = 0; 
+        return;
+    } 
+    else if (strcmp(shell_buffer, "reboot") == 0) {
         outb(0x64, 0xFE);
-    } else if (strcmp(shell_buffer, "halt") == 0) {
+    } 
+    else if (strcmp(shell_buffer, "halt") == 0) {
+        kprint("Systeme stoppe.");
         asm volatile("hlt");
-    } else if (shell_pos > 0) {
-        kprint("Inconnu.");
+    } 
+    else if (shell_pos > 0) {
+        kprint("Erreur: '"); kprint(shell_buffer); kprint("' inconnu.");
     }
-    kprint("\n> ");
+
+    // On n'affiche le prompt que si on n'a pas clear l'écran ou logout
+    if (strcmp(shell_buffer, "cls") != 0 && strcmp(shell_buffer, "logout") != 0) {
+        kprint("\n> ");
+    } else if (strcmp(shell_buffer, "cls") == 0) {
+        kprint("> ");
+    }
+
     shell_pos = 0;
 }
 
@@ -171,7 +208,7 @@ void keyboard_handler() {
                 shell_buffer[shell_pos] = '\0';
                 if (strcmp(shell_buffer, secret_password) == 0) {
                     logged_in = 1; kclear();
-                    kprint("Crystal Blue OS v0.6.0\nConnecte. Tapez 'help'.\n> ");
+                    kprint("Crystal Blue OS v0.6.1\nConnecte. Tapez 'help'.\n> ");
                 } else { kprint("\nErreur.\nPassword: "); }
                 shell_pos = 0;
             } else { execute_command(); }
@@ -188,9 +225,9 @@ void keyboard_handler() {
 void __attribute__((section(".text.kernel_main"))) kernel_main() {
     kclear();
     idt_init();
-    timer_init(100); // 100 Hz
+    timer_init(100); 
     
-    kprint("Crystal Blue OS v0.6.0\n");
+    kprint("Crystal Blue OS v0.6.1\n");
     kprint("----------------------\n");
     kprint("Password: ");
     
